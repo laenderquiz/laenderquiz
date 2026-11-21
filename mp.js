@@ -71,7 +71,7 @@ function mpInit(){
  '#mp .seg{display:flex;gap:6px;margin:6px 0 4px}#mp .seg button{flex:1}#mp .seg button.on{background:var(--acc);border-color:var(--acc);color:#fff}'+
  '#mp button:disabled{opacity:.4;cursor:default}#mp .err{color:var(--bad);font-size:.88rem;min-height:1.2em;margin-top:6px}'+
  '#mpsc b{color:var(--text)}#mpsc .me{color:var(--acc)}'+
- '#mpend{margin:0 2px 10px}#mpend .big{font-size:1.25rem;font-weight:800;margin-bottom:6px}#mpend .btns{margin-top:10px}';
+ '#mpwarn{margin:10px 2px 0;padding:8px 10px;border-radius:10px;background:rgba(250,204,21,.18);border:1px solid rgba(250,204,21,.6);font-size:.9rem}#mpend{margin:0 2px 10px}#mpend .big{font-size:1.25rem;font-weight:800;margin-bottom:6px}#mpend .btns{margin-top:10px}';
  document.head.appendChild(st);
  var w=document.createElement('div');w.id='mp';w.className='hide';
  w.innerHTML='<div class="mc">'+
@@ -88,6 +88,7 @@ function mpInit(){
    '<div class="mrow"><button id="mpLx">Abbrechen</button><button class="p" id="mpLgo" style="display:none">Duell starten</button></div></div>'+
  '</div>';
  document.body.appendChild(w);
+ var wn=document.createElement('div');wn.id='mpwarn';wn.style.display='none';$('fb').parentNode.insertBefore(wn,$('fb'));
  $('mpbtn').onclick=mpOpen;
  $('mpAx').onclick=function(){mpPanel(null)};
  $('mpNew').onclick=function(){mpCreate(false)};
@@ -135,8 +136,7 @@ function mpCreate(bot){
    if(bot)room.players.bot={name:'Testgegner 🤖',score:0,j:Date.now()+1};
    return MP.ref.set(room);
   }).then(function(){
-   try{MP.ref.onDisconnect().remove()}catch(e){}
-   mpListen();
+   mpPresence();mpListen();
   });
  }).catch(function(e){
   $('mpAerr').textContent='Keine Verbindung zum Spielserver. Prüfe die Internetverbindung. Hinweis: Zu zweit spielen geht nur über laenderquiz.github.io/laenderquiz.';
@@ -164,8 +164,7 @@ function mpJoin(){
    MP.db=db;MP.bot=false;MP.host=false;MP.me=mpId();MP.code=code;MP.ref=db.ref('rooms/'+code);
    var me=MP.ref.child?MP.ref.child('players/'+MP.me):db.ref('rooms/'+code+'/players/'+MP.me);
    return me.set({name:MP.name,score:0,j:Date.now()}).then(function(){
-    try{me.onDisconnect().remove()}catch(e){}
-    $('mpJerr').textContent='';mpListen();
+    $('mpJerr').textContent='';mpPresence();mpListen();
    });
   });
  }).catch(function(e){
@@ -180,7 +179,28 @@ function mpListen(){
 }
 function mpPlayers(r){
  var ps=(r&&r.players)||{};
- return Object.keys(ps).map(function(k){return{id:k,name:ps[k].name||'?',score:ps[k].score||0,j:ps[k].j||0}}).sort(function(a,b){return a.j-b.j});
+ return Object.keys(ps).map(function(k){return{id:k,name:ps[k].name||'?',score:ps[k].score||0,j:ps[k].j||0,on:ps[k].on}}).sort(function(a,b){return a.j-b.j});
+}
+
+/* Online-Kennzeichen: bei kurzem Verbindungsverlust (z. B. Safari im Hintergrund) bleibt der Spieler im Raum */
+function mpPresence(){
+ if(MP.bot||!MP.db||!MP.db.ref)return;
+ var me=MP.db.ref('rooms/'+MP.code+'/players/'+MP.me),info=MP.db.ref('.info/connected');
+ if(MP.infoCb)try{MP.infoRef.off('value',MP.infoCb)}catch(e){}
+ MP.infoRef=info;MP.meRef=me;
+ MP.infoCb=info.on('value',function(s){
+  if(s.val()!==true||!MP.ref)return;
+  try{me.child('on').onDisconnect().set(false)}catch(e){}
+  me.once('value').then(function(x){if(x.exists()&&MP.ref)me.update({on:true})});
+ });
+}
+function mpOffline(r){return mpPlayers(r).filter(function(p){return p.id!==MP.me&&p.on===false})}
+function mpWarn(r){
+ var w=$('mpwarn');if(!w)return;
+ var off=MP.on?mpOffline(r):[];
+ if(!off.length){w.style.display='none';clearTimeout(MP.warnT);MP.warnT=0;return}
+ if(w.style.display!=='none'||MP.warnT)return;
+ MP.warnT=setTimeout(function(){MP.warnT=0;var o=mpOffline(MP.room);if(MP.on&&o.length){w.textContent=o[0].name+' ist gerade nicht verbunden – das Duell geht weiter, sobald '+o[0].name+' zurück ist.';w.style.display=''}},2500);
 }
 
 /* ---------- Lobby ---------- */
@@ -192,7 +212,7 @@ function mpLobby(r){
   (MP.host?'Dein Mitspieler öffnet laenderquiz.github.io/laenderquiz, gibt seinen Namen ein und tippt auf „Zu zweit spielen“ → „Einem Duell beitreten“. Kontinente: '+ks.join(', ')+'.':
   'Kontinente: '+ks.join(', ')+'.');
  var ul=$('mpLpl');ul.innerHTML='';
- ps.forEach(function(p){var li=document.createElement('li');li.textContent=p.name+(p.id===MP.me?' (du)':'')+(r&&p.id===r.host?' – erstellt':'');ul.appendChild(li)});
+ ps.forEach(function(p){var li=document.createElement('li');li.textContent=p.name+(p.id===MP.me?' (du)':'')+(r&&p.id===r.host?' – erstellt':'')+(p.on===false&&p.id!==MP.me?' (gerade nicht verbunden)':'');ul.appendChild(li)});
  if(ps.length<2){var li=document.createElement('li');li.className='wait';li.textContent='Warte auf Mitspieler …';ul.appendChild(li)}
  var lw=$('mpLlen');
  if(MP.host){
@@ -236,6 +256,7 @@ function mpHandle(r){
   mpScore(r);
   var ps=mpPlayers(r);
   if(ps.length<2&&!MP.leftShown){MP.leftShown=true;mpOpponentLeft()}
+  mpWarn(r);
   if(r.status==='end'&&!MP.endShown)mpEnd(r);
   if(MP.host)mpHostTick(r);
  }
@@ -410,6 +431,9 @@ function mpBotPlay(qi){
 function mpCleanup(){
  clearTimeout(MP.decT);clearTimeout(MP.qT);clearTimeout(MP.botT);
  if(MP.ref&&MP.cb){try{MP.ref.off('value',MP.cb)}catch(e){}}
+ if(MP.infoRef&&MP.infoCb){try{MP.infoRef.off('value',MP.infoCb)}catch(e){}}MP.infoCb=null;
+ if(MP.meRef){try{MP.meRef.child('on').onDisconnect().cancel()}catch(e){}}MP.meRef=null;
+ clearTimeout(MP.warnT);MP.warnT=0;if($('mpwarn'))$('mpwarn').style.display='none';
  MP.cb=null;MP.on=false;MP.room=null;MP.game=-1;MP.qi=-1;MP.decFor=-1;MP.advFor=-1;
  stopBlink();if(window.microReset)microReset();target=null;locked=false;
  $('mpend').style.display='none';
